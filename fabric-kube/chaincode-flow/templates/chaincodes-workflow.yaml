@@ -1,8 +1,24 @@
-{{- $ordererOrg := index .Values.OrdererOrgs 0 }}
-{{- $ordererAddress := $.Values.useActualDomains | ternary (printf "%s.%s" (index $ordererOrg.Specs 0).Hostname $ordererOrg.Domain) (printf "hlf-orderer--%s--%s" ($ordererOrg.Name | lower) ((index $ordererOrg.Specs 0).Hostname | lower)) }} 
-{{- $vars:= dict }}
+{{- $vars:= dict}}
+{{- if .Values.externalOrderer.enabled }}
+  {{- $_ := set $vars "ordererOrgName" $.Values.externalOrderer.orgName }}
+  {{- $_ := set $vars "ordererUrl" (printf "%s.%s:%s" $.Values.externalOrderer.host $.Values.externalOrderer.domain $.Values.externalOrderer.port)  }}
+  {{- $_ := set $vars "ordererHost" $.Values.externalOrderer.host }}
+  {{- $_ := set $vars "ordererTlsSecret"  (printf "hlf-orderer--%s-external-tlsca" ($vars.ordererOrgName | lower)) }}
+{{- else }}
+  {{- $ordererOrg := index .Values.OrdererOrgs 0 }}
+  {{- $ordererAddress := $.Values.useActualDomains | ternary (printf "%s.%s" (index $ordererOrg.Specs 0).Hostname $ordererOrg.Domain) (printf "hlf-orderer--%s--%s" ($ordererOrg.Name | lower) ((index $ordererOrg.Specs 0).Hostname | lower)) }} 
+  {{- $_ := set $vars "ordererOrgName" $ordererOrg.Name }}
+  {{- $_ := set $vars "ordererUrl" (printf "%s:7050" $ordererAddress ) }}
+  {{- $_ := set $vars "ordererHost" (index $ordererOrg.Specs 0).Hostname }}
+  {{- $_ := set $vars "ordererTlsSecret"  (printf "hlf-orderer--%s-tlsca" ($ordererOrg.Name | lower)) }}
+{{- end }}
+
 # useActualDomains: {{ $.Values.useActualDomains }}
-# ordererAddress: {{ $ordererAddress }}
+# externalOrderer.enabled: {{ .Values.externalOrderer.enabled }}
+# ordererOrgName: {{ $vars.ordererOrgName }}
+# ordererUrl: {{ $vars.ordererUrl }}
+# ordererHost: {{ $vars.ordererHost }}
+# ordererTlsSecret: {{ $vars.ordererTlsSecret }}
 
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
@@ -24,8 +40,7 @@ spec:
   volumes:
   - name: orderer-tlsca
     secret:
-      # only use the first orderer
-      secretName: hlf-orderer--{{ $ordererOrg.Name | lower }}-tlsca
+      secretName: {{ $vars.ordererTlsSecret }}
 
 {{- range $i, $org := .Values.PeerOrgs }}
 
@@ -33,12 +48,14 @@ spec:
     secret:
       secretName: hlf-peer--{{ $org.Name | lower }}--admin-msp
       items:
+      - key: config.yaml
+        path: config.yaml
       - key: cert.pem
         path: signcerts/cert.pem
       - key: key.pem
         path: keystore/key.pem
       - key: cacert.pem
-        path: cacerts/cert.pem
+        path: cacerts/ca.{{ $org.Domain }}-cert.pem
       - key: tlscacert.pem
         path: tlscacerts/cert.pem
       - key: admincert.pem
@@ -198,6 +215,7 @@ spec:
 {{- if $.Values.flow.install.enabled }}
 {{- range $i, $chaincode := .Values.network.chaincodes }}
 {{- $version := (not $chaincode.version) | ternary $.Values.chaincode.version $chaincode.version }}
+{{- $language := (not $chaincode.language) | ternary $.Values.chaincode.language $chaincode.language }}
 {{- if or (not $.Values.flow.chaincode.include) (has $chaincode.name $.Values.flow.chaincode.include) }}
 {{- range $orgName := $chaincode.orgs }}
 {{- range $i, $org := $.Values.PeerOrgs }}
@@ -217,7 +235,7 @@ spec:
       limit: {{ $.Values.retryCount }}
     script:
       # image: hyperledger/fabric-tools:{{ $.Values.hyperledgerVersion }}
-      image: raft/hl-fabric-tools:1.4.1
+      image: raft/hl-fabric-tools:1.4.3
       command: [sh]
       source: |
           if peer chaincode checkinstalled --name {{ $chaincode.name }} --version {{ $version }}; then  
@@ -234,11 +252,23 @@ spec:
 
           echo '-- Chaincode {{ $chaincode.name }} version {{ $version }} is not installed to peer {{ $peer }}, will install..' 
 
+          {{- if eq $language "golang" }}
+
+          # chaincode is packed with tar, first extract it 
+          mkdir -p $GOPATH/src/chaincode && 
+          tar -xf /hlf_config/chaincode/{{ $chaincode.name }}.tar -C $GOPATH/src/chaincode && 
+          peer chaincode install --path chaincode/{{ $chaincode.name }} --name {{ $chaincode.name }} \
+              --version {{ $version }} --lang {{ $language }}
+
+          {{- else }}
+
           # chaincode is packed with tar, first extract it 
           mkdir -p /chaincode && 
           tar -xf /hlf_config/chaincode/{{ $chaincode.name }}.tar -C /chaincode && 
           peer chaincode install --path /chaincode/{{ $chaincode.name }} --name {{ $chaincode.name }} \
-              --version {{ $version }} --lang {{ $.Values.chaincode.language }}
+              --version {{ $version }} --lang {{ $language }}
+
+          {{- end }}
 
       volumeMounts:
         - mountPath: /etc/hyperledger/fabric/tls/
@@ -281,6 +311,7 @@ spec:
 {{- if $.Values.flow.instantiate.enabled }}
 {{- range $i, $chaincode := .Values.network.chaincodes }}
 {{- $version := (not $chaincode.version) | ternary $.Values.chaincode.version $chaincode.version }}
+{{- $language := (not $chaincode.language) | ternary $.Values.chaincode.language $chaincode.language }}
 {{- if or (not $.Values.flow.chaincode.include) (has $chaincode.name $.Values.flow.chaincode.include) }}
 {{- range $channel := $chaincode.channels }}
 {{- $orgName := index $channel.orgs 0 }}
@@ -301,7 +332,7 @@ spec:
       limit: {{ $.Values.retryCount }}
     script:
       # image: hyperledger/fabric-tools:{{ $.Values.hyperledgerVersion }}
-      image: raft/hl-fabric-tools:1.4.1
+      image: raft/hl-fabric-tools:1.4.3
       command: [sh]
       source: |
           if peer chaincode checkinstantiated --name {{ $chaincode.name }} --version {{ $version }} --channelID {{ $channel.name }}; then  
@@ -332,15 +363,15 @@ spec:
 
           if [ -z "$doUpgrade" ]; then 
             echo '-- Chaincode {{ $chaincode.name }} is not instantiated on channel {{ $channel.name }}, will instantiate..' 
-            peer chaincode instantiate --name {{ $chaincode.name }} --version {{ $version }} --lang {{ $.Values.chaincode.language }} \
-                  --channelID {{ $channel.name }} --orderer {{ $ordererAddress }}:7050 \
+            peer chaincode instantiate --name {{ $chaincode.name }} --version {{ $version }} --lang {{ $language }} \
+                  --channelID {{ $channel.name }} --orderer {{ $vars.ordererUrl }} \
                   --policy "{{ $channel.policy }}" --ctor '{"Args":[""]}' \
             {{- if $.Values.tlsEnabled }}
                   --tls --cafile /hlf_config/orderer-tlsca/tlscacert.pem \
             {{- end }}
           ; else 
-            peer chaincode upgrade --name {{ $chaincode.name }} --version {{ $version }} --lang {{ $.Values.chaincode.language }} \
-                  --channelID {{ $channel.name }} --orderer {{ $ordererAddress }}:7050 \
+            peer chaincode upgrade --name {{ $chaincode.name }} --version {{ $version }} --lang {{ $language }} \
+                  --channelID {{ $channel.name }} --orderer {{ $vars.ordererUrl }} \
                   --policy "{{ $channel.policy }}" --ctor '{"Args":[""]}' \
             {{- if $.Values.tlsEnabled }}
                   --tls --cafile /hlf_config/orderer-tlsca/tlscacert.pem \
@@ -408,7 +439,7 @@ spec:
       image: hyperledger/fabric-tools:{{ $.Values.hyperledgerVersion }}
       command: [sh]
       source: |
-          peer chaincode invoke -C {{ $channel.name }} -o {{ $ordererAddress }}:7050 \
+          peer chaincode invoke -C {{ $channel.name }} -o {{ $vars.ordererUrl }} \
               -n {{ $chaincode.name }} -c {{ $.Values.flow.invoke.function | squote }} \
               {{- if $.Values.tlsEnabled }}
                   --tls --cafile /hlf_config/orderer-tlsca/tlscacert.pem \

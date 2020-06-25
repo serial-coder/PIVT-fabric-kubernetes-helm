@@ -1,12 +1,8 @@
 ### I don't want to launch the whole Fabric network but part of it, can I still use these charts?
 
-Yes, you can. Network architecture is defined in `crypto-config.yaml` file, just strip it down to desired components.
-But: 
-* It's up to you to expose your network components to outer world
-* If you are not running an Orderer inside Kubernetes, you cannot use channel and chaincode flows as they are. 
-You need to extend the charts to take external Orderer address as a parameter
+Yes, you can. Network topology is defined in `crypto-config.yaml` file, just strip it down to desired components.
 
-If you implement these, please feel free to share your extensions :)
+See the [cross-cluster-raft-network](https://github.com/APGGroeiFabriek/PIVT#cross-cluster-raft-network) sample for a complete running example and details.
 
 ### I'm not using `cryptogen` tool but we are creating our own certificates, can I still use these charts?
 
@@ -25,9 +21,9 @@ Anyway, this behaviour can be disabled by passing `flow.invoke.enabled=false` pa
 
 ### Can I add new organizations/peers to an already running network?
 
-Hopefully you can :) After creating crypto material, hopefully this will be as easy as making a `helm upgrade..`
-
-We will soon check this scenario and implement necessary changes (if any) as this is a requirement for our project. 
+Yes you can. See the [adding new peer organizations](https://github.com/APGGroeiFabriek/PIVT#adding-new-peer-organizations)
+and [adding new peers to organizations](https://github.com/APGGroeiFabriek/PIVT/blob/master/README.md#adding-new-peers-to-organizations)
+sections respectively.
 
 ### How can I distinguish between endorser and committer peers when running a network with multiple peers per organization?
 
@@ -53,3 +49,14 @@ For storing backup contents, using an Argo flow seemed more convenient. Volume s
 Similar to above, cloud native disk snaphots do not provide any consistency guarantees.
 
 Also, taking snapshot and restoring from it requires lots of cloud specific scripting. Our flow feels much more convenient as it will work on any cloud provider or even locally.
+
+### What are those `no pem content for file` warnings?
+
+You might see `warning` logs like below when orderer and peer pods are first launching or in Argo task logs:
+```
+2020-03-05 23:44:18.965 UTC [msp] getPemMaterialFromDir -> WARN 001 Failed reading file /etc/hyperledger/fabric/msp/admincerts/cert.pem: no pem content for file /etc/hyperledger/fabric/msp/admincerts/cert.pem
+```
+
+Theses logs are `harmless`and happens when you create the certificates with `cryptogen` version `1.4.3+`.
+
+Since version `1.4.3`, `cryptogen` does not create certificates in the `admincerts` folder any more but creates `OU=admin` classification in the admin certificate. As a result, `hlf-kube` chart mounts an empty file to `admincerts/cert.pem` and we got this warning. This mount is necessary for `cryptogen` versions prior to `1.4.3` and hence for backward compatibility.

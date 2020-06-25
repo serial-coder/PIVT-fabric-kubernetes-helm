@@ -59,6 +59,7 @@ spec:
       - name: dockersocket
         hostPath:
           path: /var/run/docker.sock
+          type: Socket
       - name: peer-tls
         secret:
           secretName: hlf-peer--{{ $org.Name | lower }}--{{ $peer | lower }}-tls
@@ -66,12 +67,14 @@ spec:
         secret:
           secretName: hlf-peer--{{ $org.Name | lower }}--{{ $peer | lower }}-msp
           items:
+          - key: config.yaml
+            path: config.yaml
           - key: cert.pem
             path: signcerts/cert.pem
           - key: key.pem
             path: keystore/key.pem
           - key: cacert.pem
-            path: cacerts/cert.pem
+            path: cacerts/ca.{{ $org.Domain}}-cert.pem
           - key: tlscacert.pem
             path: tlscacerts/cert.pem
           - key: admincert.pem
@@ -80,12 +83,14 @@ spec:
         secret:
           secretName: hlf-peer--{{ $org.Name | lower }}--admin-msp
           items:
+          - key: config.yaml
+            path: config.yaml
           - key: cert.pem
             path: signcerts/cert.pem
           - key: key.pem
             path: keystore/key.pem
           - key: cacert.pem
-            path: cacerts/cert.pem
+            path: cacerts/ca.{{ $org.Domain}}-cert.pem
           - key: tlscacert.pem
             path: tlscacerts/cert.pem
           - key: admincert.pem
@@ -105,9 +110,9 @@ spec:
       {{- end }}
       {{- end }}{{""}}
 
-      containers:
-
       {{- if $.Values.backup.enabled }}
+
+      containers:
 
       # rsync-server container
       - name: rsync
@@ -139,6 +144,8 @@ spec:
           value: 0.0.0.0/0
 
       {{- else if $.Values.restore.enabled }}
+
+      containers:
 
       # rsync-server container
       - name: rsync
@@ -185,6 +192,46 @@ spec:
 
       {{- else }} {{- /* if backup/restore enabled */ -}}{{""}}
 
+      {{- if $.Values.peer.antiAffinity.enabled }}
+      {{- if gt ($org.Template.Count | int) 1 }}
+      affinity:
+        podAntiAffinity:
+      {{- if $.Values.peer.antiAffinity.strict }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                {{- range $peerIndexInner := until ($org.Template.Count | int) }}
+                {{- if not (eq $peerIndex $peerIndexInner) }}
+                {{- $peerInner := (printf "peer%s" ($peerIndexInner | toString)) }}
+                - hlf-peer--{{ $org.Name | lower }}--{{ $peerInner | lower }}
+                {{- end }} {{- /* if not same peer */ -}}
+                {{- end }} {{- /* Peers */ -}}{{""}}
+      {{- else }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  {{- range $peerIndexInner := until ($org.Template.Count | int) }}
+                  {{- if not (eq $peerIndex $peerIndexInner) }}
+                  {{- $peerInner := (printf "peer%s" ($peerIndexInner | toString)) }}
+                  - hlf-peer--{{ $org.Name | lower }}--{{ $peerInner | lower }}
+                  {{- end }} {{- /* if not same peer */ -}}
+                  {{- end }} {{- /* Peers */ -}}{{""}}
+      {{- end }}{{- /* if-else antiAffinity.strict */ -}}
+      {{- end }}{{- /* if peer count > 1 */ -}}
+      {{- end }}{{- /* if antiAffinity.enabled */ -}}{{""}}
+
+      containers:
+      
       # Peer container
       - name: peer
         image: hyperledger/fabric-peer:{{ $.Values.hyperledgerVersion }}
@@ -257,6 +304,8 @@ spec:
           value: {{ $.Values.peer.chaincode.logging.level }}
         - name: CORE_CHAINCODE_LOGGING_SHIM
           value: {{ $.Values.peer.chaincode.logging.shim }}
+        - name: CORE_VM_DOCKER_ATTACHSTDOUT
+          value: {{ $.Values.peer.chaincode.attachStdout | quote }} 
         
         - name: CORE_LEDGER_STATE_STATEDATABASE
           value: CouchDB
@@ -273,7 +322,23 @@ spec:
           value: DEBUG
         - name: GRPC_TRACE
           value:  all
+        # - name: GODEBUG
+        #   value: http2debug=2
         
+        # Operations service
+        {{- if $.Values.peer.operations.enabled }}
+        - name: CORE_OPERATIONS_LISTENADDRESS
+          value: {{ $.Values.peer.operations.listenAddress }}
+        - name: CORE_OPERATIONS_TLS_ENABLED
+          value: {{ $.Values.peer.operations.tls.enabled | quote }}
+        {{- end }}
+
+        # metrics with Prometheus
+        {{- if $.Values.peer.metrics.enabled }}
+        - name: CORE_METRICS_PROVIDER
+          value: {{ $.Values.peer.metrics.provider }}
+        {{- end }}
+
       # CouchDB container
       - name: couchdb
         image: hyperledger/fabric-couchdb:{{ $.Values.couchdb.version }}
