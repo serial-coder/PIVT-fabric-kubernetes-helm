@@ -2,7 +2,7 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
-hyperledgerVersion: 1.4.5
+hyperledgerVersion: 1.4.9
 
 # see the Raft sample in the README for how to enable TLS
 tlsEnabled: false
@@ -19,7 +19,7 @@ hostAliases: []
 
 # common persistence settings
 persistence:
-  storageClass: default
+  storageClass: # default
 
 backup:
   # initiate backup procedure?
@@ -50,6 +50,15 @@ peer:
   persistence:
     enabled: false
     size: 16Gi
+  docker:
+    dind: 
+      # use a side car docker in docker container?
+      enabled: false
+      # dind docker image
+      image: docker:19.03.8-dind
+      persistence:
+        enabled: false
+        size: 16Gi
   ingress:
     enabled: false
     annotations:
@@ -97,6 +106,7 @@ couchdb:
   restore: 
     # restore CouchDB's data from backup during restore procedure?
     enabled: true
+
 
 # Orderer settings. applies to all Orderer pods
 orderer:
